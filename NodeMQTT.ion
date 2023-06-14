@@ -1,0 +1,188 @@
+#include <ESP8266WiFi.h>
+#include <ESP8266mDNS.h>
+#include <WiFiUdp.h>
+#include <ArduinoOTA.h>
+/
+
+#include <Ticker.h>
+#include <AsyncMqttClient.h>
+#include <Wire.h>
+#include <SPI.h>
+#include <Adafruit_Sensor.h>
+#include "Adafruit_BME680.h"
+
+//ESP na rede
+//const char* host = "ESP-10.0.0.107";
+//IPAddress local_IP(10, 0, 0, 107);
+//IPAddress gateway(10, 0, 0, 1);
+//IPAddress subnet(255, 255, 0, 0)
+
+
+#ifndef STASSID
+#define STASSID "INTELBRAS" // Nome da rede
+#define STAPSK "Pbl-Sistemas-Digitais" // Chave de acesso a rede
+#endif
+
+const char* ssid = STASSID;
+const char* password = STAPSK;
+const char* host = "ESP-10.0.0.108"; // Endereço da placa
+
+
+#ifndef STASSID
+#define STASSID "INTELBRAS"
+#define STAPSK  "Pbl-Sistemas-Digitais"
+#endif
+
+const char* ssid = STASSID;
+const char* password = STAPSK;
+
+//ESP na rede
+const char* host = "ESP-10.0.0.107";
+IPAddress local_IP(10, 0, 0, 107);
+IPAddress gateway(10, 0, 0, 1);
+IPAddress subnet(255, 255, 0, 0);
+
+// Definições do servidor MQTT
+//const char* BROKER_MQTT = "broker.emqx.io";  // broker MQTT 
+const char* BROKER_MQTT = "10.0.0.101";        // broker MQTT 
+int BROKER_PORT = 1883;
+              
+// Definições do ID
+#define ID_MQTT   "ESP-107"  // ID desta nodeMCU (ID Client)
+#define USER      "aluno"
+#define PASSWORD  "@luno*123"
+#define QOS       1
+WiFiClient wifiClient;
+PubSubClient MQTT(wifiClient);   // Instancia o Cliente MQTT passando o objeto espClient
+
+// Topicos a serem subescritos
+#define SBC_ESP           "MQTTNode"
+
+// Topicos a serem publicados
+#define SENSOR_D1         "MQTTOrangi"
+#define SENSOR_D2         "MQTTOrangi"
+#define SENSOR_ANALOG     "MQTTOrangi"
+#define SENSOR_DIGITAL    "MQTTOrangi"
+#define STATUS            "MQTTOrangi"
+#define LED               "MQTTOrangi"
+
+#define NODE_ID "0x1"
+#define DESELECT_NODE "0x81"
+#define TURN_ON_LED "0xC0"
+#define CONSULT_A0  "0xC1"
+#define CONSULT_D1  "0xC5"
+#define CONSULT_D0  "0xC3"
+bool selectedUnit = false;
+
+
+// tempo entre as medicoes automaticas
+int tempo_medicoes = 60;  // padrao 1 minuto
+Timer timer;
+
+int led_pin = LED_BUILTIN;
+#define N_DIMMERS 3
+int dimmer_pin[] = { 14, 5, 15 };
+
+void setup() {
+  Serial.begin(9600);
+
+  /* switch on led */
+  pinMode(led_pin, OUTPUT);
+  digitalWrite(led_pin, LOW);
+
+  Serial.println("Booting");
+  WiFi.mode(WIFI_STA);
+
+  WiFi.begin(ssid, password);
+
+  while (WiFi.waitForConnectResult() != WL_CONNECTED) {
+  WiFi.begin(ssid, password);
+  Serial.println("Retrying connection...");
+  }
+  /* switch off led */
+  digitalWrite(led_pin, HIGH);
+
+  /* configure dimmers, and OTA server events */
+  analogWriteRange(1000);
+  analogWrite(led_pin, 990);
+
+  for (int i = 0; i < N_DIMMERS; i++) {
+  pinMode(dimmer_pin[i], OUTPUT);
+  analogWrite(dimmer_pin[i], 50);
+  }
+
+  ArduinoOTA.setHostname(host);
+  ArduinoOTA.onStart([]() {  // switch off all the PWMs during upgrade
+  for (int i = 0; i < N_DIMMERS; i++) {
+  analogWrite(dimmer_pin[i], 0);
+  }
+  analogWrite(led_pin, 0);
+  });
+
+  ArduinoOTA.onEnd([]() {  // do a fancy thing with our board led at end
+  for (int i = 0; i < 30; i++) {
+  analogWrite(led_pin, (i * 100) % 1001);
+  delay(50);
+  }
+  });
+
+  ArduinoOTA.onError([](ota_error_t error) {
+  (void)error;
+  ESP.restart();
+  });
+
+  /* setup the OTA server */
+  ArduinoOTA.begin();
+  Serial.println("Ready");
+
+  pinMode(D0, INPUT); // Configurando a pinagem do sensor digital D0
+  pinMode(D1, INPUT); // Configurando a pinagem do sensor digital D1
+}
+
+#define NODE_ID 0x1
+#define DESELECT_NODE 0x81
+
+unsigned char recvd = '0';
+bool selectedUnit = false;
+int analogData;
+unsigned char quocient;
+unsigned char rest;
+byte d[4];
+const int analogInPin = A0;  // ESP8266 Analog Pin ADC0 = A0
+int sensorValue = 0;  // value read from the pot
+
+void loop() {
+  ArduinoOTA.handle();
+
+  if(Serial.available() > 0) {
+    
+	recvd = Serial.read();
+	if(recvd == 255){ // // Se a variável recebida for igual a 255 envia o valor de D1
+  	Serial.write(digitalRead(D1));
+	}
+	else if(recvd == 155){ // Se a variável recebida for igual a 155 manda o dado analogico
+  	digitalWrite(led_pin, LOW);
+	}
+	else if(recvd == 100){ // mandando 3 bytes
+  	sensorValue = analogRead(analogInPin);
+
+  	// Como a informação tem 12 bits, salva 8 em uma variável e arrasta 8 e salva de novo
+  	d[0] = sensorValue     	& 0xff;
+  	d[1] = (sensorValue >> 8)  & 0xff; // Move 8 dígitos para direita
+  	d[2] = (sensorValue >> 16)  & 0xff;	// Move 16 dígitos para direita
+      	 
+// Envia os valores de d[0], d[1] e d[2]
+  	Serial.write(d[0]);
+  	Serial.write(d[1]);
+  	Serial.write(d[2]);
+   
+	}
+	else{
+//Escreve o valor de D0
+  	Serial.write(digitalRead(D0));
+	}
+  }
+ 
+ 
+}
+ 
