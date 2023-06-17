@@ -1,0 +1,102 @@
+#include <ESP8266WiFi.h>
+#include <PubSubClient.h>
+#include <Adafruit_Sensor.h>
+#include <DHT.h>
+
+// Configurações da rede Wi-Fi
+const char* ssid = "nome_da_rede";
+const char* password = "senha_da_rede";
+
+// Configurações do MQTT
+const char* mqtt_server = "endereco_do_broker";
+const int mqtt_port = 1883;
+const char* mqtt_topic_temperatura = "sensor/temperatura";
+const char* mqtt_topic_umidade = "sensor/umidade";
+
+// Configurações do sensor DHT
+#define DHTPIN 2
+#define DHTTYPE DHT11
+DHT dht(DHTPIN, DHTTYPE);
+
+// Cliente MQTT
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+// Função para conexão Wi-Fi
+void connectWiFi() {
+  Serial.print("Conectando ao Wi-Fi");
+  
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  
+  Serial.println("");
+  Serial.println("Conexão Wi-Fi estabelecida");
+}
+
+// Função de callback para recebimento de mensagens MQTT
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  // Lógica para tratar as mensagens recebidas (se necessário)
+}
+
+// Função para conexão ao servidor MQTT
+void connectMQTT() {
+  while (!client.connected()) {
+    Serial.print("Conectando ao servidor MQTT...");
+    
+    if (client.connect("nodemcu-client")) {
+      Serial.println("Conexão MQTT estabelecida");
+      client.subscribe(mqtt_topic_temperatura);
+      client.subscribe(mqtt_topic_umidade);
+    } else {
+      Serial.print("Falha na conexão MQTT, rc=");
+      Serial.print(client.state());
+      Serial.println(" Tentando novamente em 5 segundos...");
+      delay(5000);
+    }
+  }
+}
+
+// Função para publicar leituras de temperatura e umidade
+void publishData(float temperatura, float umidade) {
+  char tempStr[10];
+  char umidStr[10];
+  
+  dtostrf(temperatura, 4, 2, tempStr);
+  dtostrf(umidade, 4, 2, umidStr);
+  
+  client.publish(mqtt_topic_temperatura, tempStr);
+  client.publish(mqtt_topic_umidade, umidStr);
+}
+
+// Função de inicialização
+void setup() {
+  Serial.begin(115200);
+  
+  connectWiFi();
+  
+  client.setServer(mqtt_server, mqtt_port);
+  client.setCallback(mqttCallback);
+  
+  dht.begin();
+}
+
+// Função principal
+void loop() {
+  if (!client.connected()) {
+    connectMQTT();
+  }
+  
+  client.loop();
+  
+  // Leitura do sensor de temperatura e umidade
+  float temperatura = dht.readTemperature();
+  float umidade = dht.readHumidity();
+  
+  // Publicação dos dados no MQTT
+  publishData(temperatura, umidade);
+  
+  delay(5000); // Espera de 5 segundos antes da próxima leitura
+}
